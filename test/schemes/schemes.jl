@@ -1,6 +1,8 @@
 using Test
 using TNRKit
 using TensorKit
+using LinearAlgebra
+using OptimKit
 
 # This tests every scheme in the library on the Z2 symmetric Ising model.
 println("---------------------")
@@ -369,6 +371,71 @@ end
 end
 
 # SLoopTNR
+@testset "Fixed-point tensor basis" begin
+    T_inv = classical_ising_inv()
+    Tflip = flip(T_inv, (1, 2, 3, 4))
+    result = fixed_point_tensor(T_inv; return_basis = true)
+    horizontal_transfer = TNRKit._fixed_point_transfer_matrix(
+        T_inv, true
+    )
+    horizontal_basis = reshape(
+        result.horizontal_basis, size(horizontal_transfer, 1), :
+    )
+    vertical_transfer = TNRKit._fixed_point_transfer_matrix(
+        T_inv, false
+    )
+    vertical_basis = reshape(result.vertical_basis, size(vertical_transfer, 1), :)
+    @tensoropt vertical_tensor[-1 -2; -3 -4] :=
+        T_inv[1 3; -1 2] * Tflip[1 4; -2 2] *
+        Tflip[5 3; -3 6] * T_inv[5 4; -4 6]
+    expected_vertical_transfer = reshape(convert(Array, vertical_tensor), size(vertical_transfer))
+
+    @test result.elements[1, 1, 1, 1] ≈ 1
+    @test vertical_transfer ≈ expected_vertical_transfer
+    @test horizontal_transfer * horizontal_basis ≈
+        horizontal_basis * Diagonal(result.horizontal_eigenvalues)
+    @test vertical_transfer * vertical_basis ≈
+        vertical_basis * Diagonal(result.vertical_eigenvalues)
+    @test result.horizontal_eigenvalues ≈ result.vertical_eigenvalues
+end
+
+@testset "4 × 4 fixed-point tensor basis" begin
+    T_inv = classical_ising_inv()
+    result = fixed_point_tensor_4x4(T_inv; return_basis = true, eig_tol = 1.0e-10)
+    horizontal_transfer = TNRKit._fixed_point_transfer_action_4x4(T_inv, true)
+    vertical_transfer = TNRKit._fixed_point_transfer_action_4x4(T_inv, false)
+    horizontal_basis = reshape(result.horizontal_basis, :, 3)
+    vertical_basis = reshape(result.vertical_basis, :, 3)
+
+    @test result.elements[1, 1, 1, 1] ≈ 1
+    @test real(result.elements[2, 2, 2, 2]) ≈ 0.3964205 atol = 1.0e-6
+    for state in 1:3
+        @test horizontal_transfer(horizontal_basis[:, state]) ≈
+            result.horizontal_eigenvalues[state] * horizontal_basis[:, state]
+        @test vertical_transfer(vertical_basis[:, state]) ≈
+            result.vertical_eigenvalues[state] * vertical_basis[:, state]
+    end
+    @test result.horizontal_eigenvalues ≈ result.vertical_eigenvalues
+end
+
+@testset "SLoopTNR - Manual gradient" begin
+    V = ℝ^2
+    T_inv = ones(Float64, V ⊗ V ⊗ V ⊗ V ← one(V))
+    S = ones(Float64, V ⊗ V ← V)
+    dS = ones(Float64, space(S))
+    n_TT = TNRKit.TtoNorm(T_inv)
+
+    cost, grad = TNRKit.cost_looptnr_fg(S, T_inv, n_TT)
+    ϵ = 1.0e-6
+    directional_derivative = (
+        TNRKit.cost_looptnr(S + ϵ * dS, T_inv, n_TT) -
+            TNRKit.cost_looptnr(S - ϵ * dS, T_inv, n_TT)
+    ) / (2ϵ)
+
+    @test cost ≈ TNRKit.cost_looptnr(S, T_inv, n_TT)
+    @test real(dot(grad, dS)) ≈ directional_derivative rtol = 1.0e-9
+end
+
 @testset "SLoopTNR - Ising Model" begin
     @info "SLoopTNR ising free energy"
     T_inv = classical_ising_inv()
@@ -377,6 +444,18 @@ end
     data = run!(scheme, truncrank(4), maxiter(25))
 
     @test free_energy(data, ising_βc) ≈ f_onsager rtol = 1.0e-5
+
+    @info "SLoopTNR Ising fixed-point tensor"
+    gradalg = LBFGS(10; verbosity = 0, gradtol = 6.0e-7, maxiter = 2000)
+    scheme = SLoopTNR(classical_ising_inv(); gradalg)
+    run!(scheme, truncrank(16), maxiter(16))
+    fp = fixed_point_tensor(scheme)
+
+    # The finite-χ value approaches the exact 0.645 from below (the paper
+    # reports 0.610 at D = 96 and finite L).
+    σ4 = real(fp[2, 2, 2, 2])
+    @test σ4 ≈ 0.5967 atol = 5.0e-3
+    @test σ4 ≈ 0.645 atol = 6.0e-2
 end
 
 # ctm

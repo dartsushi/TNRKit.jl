@@ -27,7 +27,7 @@ mutable struct SLoopTNR{E, S, TT <: AbstractTensorMap{E, S, 4, 0}} <: TNRScheme{
 
     "Gradient optimization algorithm"
     gradalg::OptimKit.LBFGS
-    function SLoopTNR(T::TT; gradalg = LBFGS(10; verbosity = 0, gradtol = 6.0e-7, maxiter = 40000)) where {E, S, TT <: AbstractTensorMap{E, S, 4, 0}}
+    function SLoopTNR(T::TT; gradalg = LBFGS(10; verbosity = 0, gradtol = 1.0e-6, maxiter = 200)) where {E, S, TT <: AbstractTensorMap{E, S, 4, 0}}
         return new{E, S, TT}(T, gradalg)
     end
 end

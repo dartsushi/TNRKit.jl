@@ -74,6 +74,21 @@ function TTtoNorm(TT)
     return tr(T8 * b)
 end
 
+function TtoNorm(T)
+    @tensor TT[-1 -2; -3 -4] := T[1 -1 2 -3] * conj(T[1 -2 2 -4])
+    return TTtoNorm(TT)
+end
+    
+function cost_looptnr(S, T, n_TT)
+    @assert eltype(S) == Float64 "Modification is needed for complex numbers!"
+    SS = StoSS(S)
+
+    @tensor TSS[-1 -2; -3 -4] := T[1 -1 2 -3] * conj(SS[1 -2 2 -4])
+    @tensor S4[-1 -2; -3 -4] := SS[1 -1 2 -3] * conj(SS[1 -2 2 -4])
+    # T
+    return n_TT + TTtoNorm(S4) - 2 * TTtoNorm(TSS)
+end
+
 function cost_looptnr(S, T)
     @assert eltype(S) == Float64 "Modification is needed for complex numbers!"
     SS = StoSS(S)
@@ -92,7 +107,8 @@ function fg(f, A)
 end
 
 function optimize_S(scheme, S)
-    opt_fun(x) = cost_looptnr(x, scheme.T)
+    n_TT = TtoNorm(scheme.T)
+    opt_fun(x) = cost_looptnr(x, scheme.T, n_TT)
     opt_fg(x) = fg(opt_fun, x)
     Sopt, fx, gx, numfg, normgradhistory = optimize(
         opt_fg, S,

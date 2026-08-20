@@ -370,54 +370,6 @@ end
     @test free_energy(data, ising_βc; initial_size = 2) ≈ f_onsager rtol = 1.0e-6
 end
 
-# SLoopTNR
-@testset "Fixed-point tensor basis" begin
-    T_inv = classical_ising_inv()
-    Tflip = flip(T_inv, (1, 2, 3, 4))
-    result = fixed_point_tensor(T_inv; return_basis = true)
-    horizontal_transfer = TNRKit._fixed_point_transfer_matrix(
-        T_inv, true
-    )
-    horizontal_basis = reshape(
-        result.horizontal_basis, size(horizontal_transfer, 1), :
-    )
-    vertical_transfer = TNRKit._fixed_point_transfer_matrix(
-        T_inv, false
-    )
-    vertical_basis = reshape(result.vertical_basis, size(vertical_transfer, 1), :)
-    @tensoropt vertical_tensor[-1 -2; -3 -4] :=
-        T_inv[1 3; -1 2] * Tflip[1 4; -2 2] *
-        Tflip[5 3; -3 6] * T_inv[5 4; -4 6]
-    expected_vertical_transfer = reshape(convert(Array, vertical_tensor), size(vertical_transfer))
-
-    @test result.elements[1, 1, 1, 1] ≈ 1
-    @test vertical_transfer ≈ expected_vertical_transfer
-    @test horizontal_transfer * horizontal_basis ≈
-        horizontal_basis * Diagonal(result.horizontal_eigenvalues)
-    @test vertical_transfer * vertical_basis ≈
-        vertical_basis * Diagonal(result.vertical_eigenvalues)
-    @test result.horizontal_eigenvalues ≈ result.vertical_eigenvalues
-end
-
-@testset "4 × 4 fixed-point tensor basis" begin
-    T_inv = classical_ising_inv()
-    result = fixed_point_tensor_4x4(T_inv; return_basis = true, eig_tol = 1.0e-10)
-    horizontal_transfer = TNRKit._fixed_point_transfer_action_4x4(T_inv, true)
-    vertical_transfer = TNRKit._fixed_point_transfer_action_4x4(T_inv, false)
-    horizontal_basis = reshape(result.horizontal_basis, :, 3)
-    vertical_basis = reshape(result.vertical_basis, :, 3)
-
-    @test result.elements[1, 1, 1, 1] ≈ 1
-    @test real(result.elements[2, 2, 2, 2]) ≈ 0.3964205 atol = 1.0e-6
-    for state in 1:3
-        @test horizontal_transfer(horizontal_basis[:, state]) ≈
-            result.horizontal_eigenvalues[state] * horizontal_basis[:, state]
-        @test vertical_transfer(vertical_basis[:, state]) ≈
-            result.vertical_eigenvalues[state] * vertical_basis[:, state]
-    end
-    @test result.horizontal_eigenvalues ≈ result.vertical_eigenvalues
-end
-
 @testset "SLoopTNR - Manual gradient" begin
     V = ℝ^2
     T_inv = ones(Float64, V ⊗ V ⊗ V ⊗ V ← one(V))

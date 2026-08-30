@@ -277,17 +277,10 @@ function _fixed_point_basis(
     ) where {E, S}
     transfer = _fixed_point_transfer_matrix(T, horizontal)
     hermitian_transfer = Hermitian((transfer + transfer') / 2)
-    x0 = convert.(eltype(transfer), sin.(eachindex(axes(transfer, 1))))
-    eigenvalues, eigenvectors, info = eigsolve(
-        hermitian_transfer, x0, nstates, :LM;
-        krylovdim = min(size(transfer, 1), eig_krylovdim), maxiter = 300,
-        tol = eig_tol, verbosity = 0
+    eigenvalues, eigenvectors = _fixed_point_hermitian_eigenpairs(
+        hermitian_transfer, nstates, eig_tol, eig_krylovdim;
+        context = (; horizontal)
     )
-    info.converged < nstates && @warn "Fixed-point transfer-matrix eigensolver did not converge" horizontal info
-
-    order = sortperm(real.(eigenvalues); rev = true)[1:nstates]
-    eigenvalues = eigenvalues[order]
-    eigenvectors = reduce(hcat, eigenvectors[order])
 
     # Fix the otherwise arbitrary phase of every state. This makes tensor
     # elements with an odd number of a given state reproducible as well.
@@ -299,6 +292,127 @@ function _fixed_point_basis(
 
     d = dim(codomain(T)[1])
     return reshape(eigenvectors, d, d, nstates), eigenvalues
+end
+
+function _fixed_point_hermitian_eigenpairs(
+        transfer::Hermitian, nstates::Int, eig_tol::Real, eig_krylovdim::Int;
+        context = nothing
+    )
+    dimension = size(transfer, 1)
+    scalar_type = eltype(transfer)
+    value_type = typeof(real(zero(scalar_type)))
+
+    # Preserve the original T-tensor calculation exactly whenever it works:
+    # same deterministic starting vector, :LM selector, and real-value
+    # ordering. The recovery paths below are entered only if one of the
+    # requested Ritz pairs does not pass an explicit residual check.
+    x0 = convert.(scalar_type, sin.(1:dimension))
+    initial_values, initial_vectors, initial_info = eigsolve(
+        transfer, x0, nstates, :LM;
+        krylovdim = min(dimension, eig_krylovdim), maxiter = 300,
+        tol = eig_tol, verbosity = 0
+    )
+    if length(initial_vectors) >= nstates
+        order = sortperm(real.(initial_values); rev = true)[1:nstates]
+        values = initial_values[order]
+        vectors = initial_vectors[order]
+        if all(
+                _fixed_point_eigenpair_converged(
+                    transfer, values[index], vectors[index], eig_tol
+                ) for index in eachindex(values)
+            )
+            return values, reduce(hcat, vectors)
+        end
+    end
+
+    # Small transfer matrices occur during the first few RG steps and are
+    # often exactly rank deficient. A one-vector Krylov recurrence can then
+    # terminate before spanning all requested states, even though every Ritz
+    # pair it did find has a tiny residual. The dense Hermitian solver handles
+    # the null space and exact degeneracies without that ambiguity.
+    if dimension <= 256
+        decomposition = eigen(transfer)
+        selected = sortperm(abs.(decomposition.values); rev = true)[1:nstates]
+        order = selected[sortperm(real.(decomposition.values[selected]); rev = true)]
+        return decomposition.values[order], decomposition.vectors[:, order]
+    end
+
+    eigenvalues = value_type[]
+    eigenvectors = Vector{Vector{scalar_type}}()
+    last_info = initial_info
+
+    # Lock every independently converged Ritz vector. If an invariant Krylov
+    # space terminates early, restart in its orthogonal complement to recover
+    # the remaining symmetry or zero-eigenvalue sectors.
+    for attempt in 1:max(3, nstates)
+        length(eigenvectors) == nstates && break
+        x0 = convert.(
+            scalar_type,
+            [
+                sin((attempt + sqrt(2)) * i) +
+                    cos((attempt + sqrt(3)) * i^2 / dimension)
+                    for i in 1:dimension
+            ]
+        )
+        _orthogonalize_fixed_point_vector!(x0, eigenvectors)
+        norm(x0) > sqrt(eps(value_type)) || continue
+        normalize!(x0)
+
+        projected_transfer = function (vector)
+            result = transfer * vector
+            _orthogonalize_fixed_point_vector!(result, eigenvectors)
+            return result
+        end
+        remaining = nstates - length(eigenvectors)
+        values, vectors, info = eigsolve(
+            projected_transfer, x0, remaining, :LM;
+            krylovdim = min(
+                dimension, max(eig_krylovdim, 2 * remaining + 1)
+            ),
+            maxiter = 300, tol = eig_tol, verbosity = 0
+        )
+        last_info = info
+
+        for index in sortperm(abs.(values); rev = true)
+            length(eigenvectors) == nstates && break
+            vector = copy(vectors[index])
+            _orthogonalize_fixed_point_vector!(vector, eigenvectors)
+            vector_norm = norm(vector)
+            vector_norm > sqrt(eps(value_type)) || continue
+            vector ./= vector_norm
+
+            image = transfer * vector
+            value = real(dot(vector, image))
+            residual = norm(image - value * vector)
+            residual <= 10 * eig_tol * max(norm(image), abs(value), one(value_type)) || continue
+
+            push!(eigenvalues, value)
+            push!(eigenvectors, vector)
+        end
+    end
+
+    length(eigenvectors) == nstates || throw(
+        ErrorException(
+            "fixed-point transfer-matrix eigensolver found $(length(eigenvectors)) " *
+                "of $nstates requested states; context=$context, last_info=$last_info"
+        )
+    )
+    order = sortperm(eigenvalues; rev = true)
+    return eigenvalues[order], reduce(hcat, eigenvectors[order])
+end
+
+function _fixed_point_eigenpair_converged(transfer, value, vector, eig_tol)
+    image = transfer * vector
+    residual = norm(image - value * vector)
+    return residual <= 10 * eig_tol * max(norm(image), abs(value), 1)
+end
+
+function _orthogonalize_fixed_point_vector!(vector, basis)
+    # A second pass keeps the locked subspace orthogonal near degeneracies.
+    for _ in 1:2, basis_vector in basis
+        vector .-= basis_vector .* dot(basis_vector, vector)
+    end
+    return vector
 end
 
 function _fixed_point_transfer_action_4x4(

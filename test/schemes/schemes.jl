@@ -391,12 +391,24 @@ end
     expected_vertical_transfer = reshape(convert(Array, vertical_tensor), size(vertical_transfer))
 
     @test result.elements[1, 1, 1, 1] ≈ 1
+    @test real(result.elements[2, 2, 2, 2]) ≈ 0.31384668009853395
     @test vertical_transfer ≈ expected_vertical_transfer
     @test horizontal_transfer * horizontal_basis ≈
         horizontal_basis * Diagonal(result.horizontal_eigenvalues)
     @test vertical_transfer * vertical_basis ≈
         vertical_basis * Diagonal(result.vertical_eigenvalues)
     @test result.horizontal_eigenvalues ≈ result.vertical_eigenvalues
+
+    # A scalar Krylov recurrence may terminate after the two nonzero
+    # eigenvalues of a rank-deficient transfer matrix. The basis helper must
+    # still return the requested third (zero-eigenvalue) state.
+    rank_deficient_transfer = Hermitian(Diagonal(vcat([3.0, 2.0], zeros(298))))
+    eigenvalues, eigenvectors = TNRKit._fixed_point_hermitian_eigenpairs(
+        rank_deficient_transfer, 3, 1.0e-12, 20
+    )
+    @test eigenvalues ≈ [3.0, 2.0, 0.0] atol = 1.0e-10
+    @test rank_deficient_transfer * eigenvectors ≈
+        eigenvectors * Diagonal(eigenvalues) atol = 1.0e-10
 end
 
 @testset "4 × 4 fixed-point tensor basis" begin
@@ -448,14 +460,38 @@ end
     @info "SLoopTNR Ising fixed-point tensor"
     gradalg = LBFGS(10; verbosity = 0, gradtol = 6.0e-7, maxiter = 2000)
     scheme = SLoopTNR(classical_ising_inv(); gradalg)
+    @test_throws ArgumentError fixed_point_tensors(scheme)
     run!(scheme, truncrank(16), maxiter(16))
-    fp = fixed_point_tensor(scheme)
+    fp = fixed_point_tensors(scheme)
 
     # The finite-χ value approaches the exact 0.645 from below (the paper
     # reports 0.610 at D = 96 and finite L).
-    σ4 = real(fp[2, 2, 2, 2])
+    σ4 = real(fp.T[2, 2, 2, 2])
     @test σ4 ≈ 0.5967 atol = 5.0e-3
     @test σ4 ≈ 0.645 atol = 6.0e-2
+
+    # Ising primary order: (1, σ, ε). Equation (5) of Ueda and Yamazaki gives
+    # x_S = exp(π/4) and C_σσ1 = 1, C_σσε = 1/2. Eigenvector signs are gauge
+    # choices, so compare absolute values whenever an ε leg is present.
+    Sfp = fp.S
+    S_1σσ = exp(-π / 16)
+    S_σσ1 = exp(-π / 16) * 2.0^(-1 / 8)
+    S_σσε = exp(-5π / 16) * 2.0^(3 / 8) / 2
+    S_1εε = exp(-π / 2)
+    S_εε1 = exp(-π / 2) / 2
+    @test abs(Sfp[1, 2, 2]) ≈ S_1σσ atol = 2.0e-2
+    @test abs(Sfp[2, 2, 1]) ≈ S_σσ1 atol = 2.0e-2
+    @test abs(Sfp[2, 2, 3]) ≈ S_σσε atol = 1.0e-2
+    @test abs(Sfp[1, 3, 3]) ≈ S_1εε atol = 1.0e-2
+    @test abs(Sfp[3, 3, 1]) ≈ S_εε1 atol = 1.0e-2
+    @test abs(Sfp[2, 2, 2]) < 1.0e-12
+
+    pair_transfer = TNRKit._fixed_point_transfer_matrix(
+        TNRKit.StoSS(scheme.s_tensor), true
+    )
+    pair_basis = reshape(fp.S_pair_basis, size(pair_transfer, 1), :)
+    @test pair_transfer * pair_basis ≈
+        pair_basis * Diagonal(fp.S_pair_eigenvalues)
 end
 
 # ctm

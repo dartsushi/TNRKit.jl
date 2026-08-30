@@ -139,7 +139,7 @@ include("utility/cft.jl")
 export CFTData, extract_tau_and_c
 
 include("utility/fixed_point_tensor.jl")
-export fixed_point_tensor, fixed_point_tensor_4x4
+export fixed_point_tensor, fixed_point_tensor_4x4, fixed_point_tensors
 
 include("utility/gs_degeneracy.jl")
 export ground_state_degeneracy, gu_wen_ratio

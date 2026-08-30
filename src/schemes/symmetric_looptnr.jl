@@ -25,10 +25,13 @@ mutable struct SLoopTNR{E, S, TT <: AbstractTensorMap{E, S, 4, 0}} <: TNRScheme{
     "Central tensor"
     T::TT
 
+    "Optimized three-leg tensor from the latest renormalization step"
+    s_tensor::Any
+
     "Gradient optimization algorithm"
     gradalg::OptimKit.LBFGS
-    function SLoopTNR(T::TT; gradalg = LBFGS(10; verbosity = 0, gradtol = 1.0e-6, maxiter = 200)) where {E, S, TT <: AbstractTensorMap{E, S, 4, 0}}
-        return new{E, S, TT}(T, gradalg)
+    function SLoopTNR(T::TT; gradalg = LBFGS(10; verbosity = 0, gradtol = 6.0e-7, maxiter = 40000)) where {E, S, TT <: AbstractTensorMap{E, S, 4, 0}}
+        return new{E, S, TT}(T, nothing, gradalg)
     end
 end
 
@@ -229,6 +232,7 @@ function step!(scheme::SLoopTNR, trunc::TruncationStrategy, oneloop)
         S = decompose_T(scheme.T, trunc)
     end
     S = optimize_S(scheme, S)
+    scheme.s_tensor = S
     scheme.T = combine_4S(S)
     return scheme
 end
@@ -264,6 +268,7 @@ end
 function Base.show(io::IO, scheme::SLoopTNR)
     println(io, "Symmetric LoopTNR - C4 and reflection symmetric scheme")
     println(io, "  * T: $(summary(scheme.T))")
+    isnothing(scheme.s_tensor) || println(io, "  * S: $(summary(scheme.s_tensor))")
     println(io, "  * gradalg: $(summary(scheme.gradalg))")
     return nothing
 end

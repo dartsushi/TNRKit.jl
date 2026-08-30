@@ -22,7 +22,7 @@ eigenvalues.
 """
 function fixed_point_tensor(
         T::AbstractTensorMap{E, S, 4, 0}; nstates::Int = 3,
-        eig_tol::Real = 1.0e-12, eig_krylovdim::Int = 40,
+        eig_tol::Real = 1.0e-13, eig_krylovdim::Int = 100,
         return_basis::Bool = false
     ) where {E, S}
     nstates > 0 || throw(ArgumentError("nstates must be positive"))
@@ -31,9 +31,11 @@ function fixed_point_tensor(
 
     A = convert(Array, T)
     allequal(size(A)) || throw(DimensionMismatch("all four tensor legs must have equal dimension"))
-    nstates <= size(A, 1)^2 || throw(DimensionMismatch(
-        "cannot retain $nstates states from a transfer matrix of dimension $(size(A, 1)^2)"
-    ))
+    nstates <= size(A, 1)^2 || throw(
+        DimensionMismatch(
+            "cannot retain $nstates states from a transfer matrix of dimension $(size(A, 1)^2)"
+        )
+    )
 
     horizontal_basis, horizontal_eigenvalues = _fixed_point_basis(
         T, true, nstates, eig_tol, eig_krylovdim
@@ -82,6 +84,114 @@ end
 fixed_point_tensor(scheme::SLoopTNR; kwargs...) = fixed_point_tensor(scheme.T; kwargs...)
 
 """
+    fixed_point_tensors(scheme::SLoopTNR; kwargs...)
+    fixed_point_tensors(S, T; kwargs...)
+
+Compute both the normalized four-leg `T` and three-leg `S` fixed-point tensor
+elements. `S` is the optimized three-leg tensor whose four-fold contraction
+produces `T`.
+
+Following the upper construction in Fig. 6 of Ueda and Yamazaki (2023), four
+optimized three-leg tensors form an open chain. The first two paired boundary
+legs reuse the transfer projector of the two-`S` channel `StoSS(S)`, while the
+pair at the two ends of the chain reuses the vertical projector of the
+renormalized `T`. Thus no independent gauge is chosen for `S`: all three
+projectors are the ones belonging to the corresponding four-leg `T` tensors
+on the two sides of the renormalization step.
+
+The returned named tuple contains `T`, `S`, the horizontal and vertical bases
+of `T`, and `S_pair_basis`, the basis reused on the first two `S` legs. Both
+tensors are normalized by their all-identity element. The `T` leg order is
+left-bottom-top-right; the `S` indices follow Eq. (3) of Ueda and Yamazaki
+(2023), with the equal pair of states first and the coarse state third.
+
+At least one [`step!`](@ref) must have been applied to `scheme`, so that its
+optimized three-leg tensor is available. Its internal and external bond
+dimensions must also have reached the same retained dimension, as they do at
+the fixed point.
+"""
+function fixed_point_tensors(
+        scheme::SLoopTNR; nstates::Int = 3,
+        eig_tol::Real = 1.0e-13, eig_krylovdim::Int = 100
+    )
+    isnothing(scheme.s_tensor) && throw(
+        ArgumentError(
+            "fixed_point_tensors requires an SLoopTNR scheme after at least one step"
+        )
+    )
+    return fixed_point_tensors(
+        scheme.s_tensor, scheme.T; nstates, eig_tol, eig_krylovdim
+    )
+end
+
+function fixed_point_tensors(
+        S_tensor::AbstractTensorMap{E, S, 2, 1},
+        T::AbstractTensorMap{E, S, 4, 0}; nstates::Int = 3,
+        eig_tol::Real = 1.0e-13, eig_krylovdim::Int = 100
+    ) where {E, S}
+    result = fixed_point_tensor(
+        T; nstates, eig_tol, eig_krylovdim, return_basis = true
+    )
+    pair_tensor = StoSS(S_tensor)
+    S_pair_basis, S_pair_eigenvalues = _fixed_point_basis(
+        pair_tensor, true, nstates, eig_tol, eig_krylovdim
+    )
+    S_elements = _fixed_point_s_tensor(
+        S_tensor, conj.(S_pair_basis), conj.(result.vertical_basis)
+    )
+    return (;
+        T = result.elements, S = S_elements,
+        result.horizontal_basis, result.vertical_basis,
+        result.horizontal_eigenvalues, result.vertical_eigenvalues,
+        S_pair_basis, S_pair_eigenvalues,
+    )
+end
+
+function _fixed_point_s_tensor(S_tensor, horizontal_projector, vertical_projector)
+    S = convert(Array, S_tensor)
+    d1, d2, d3 = size(S)
+    d1 == d2 || throw(
+        DimensionMismatch(
+            "the two internal S-tensor legs must have equal dimension"
+        )
+    )
+    size(horizontal_projector, 1) == d1 &&
+        size(horizontal_projector, 2) == d2 || throw(
+        DimensionMismatch(
+            "the two-S-channel projector does not match the internal S-tensor legs"
+        )
+    )
+    size(vertical_projector, 1) == d3 &&
+        size(vertical_projector, 2) == d3 || throw(
+        DimensionMismatch(
+            "the vertical T projector does not match the external S-tensor leg"
+        )
+    )
+
+    # This is the upper tensor network in Fig. 6 with a projector on every
+    # double boundary line:
+    #
+    #                j--P_p--m       l--P_q--n
+    #                    |               |
+    #             a--S---S-------S-------S--c
+    #                 i       b       k
+    #             \_________________________/
+    #                         P_r
+    #
+    # TensorOperations chooses the same factorization through
+    # M[l,m,j,k] = sum_i S[i,j,k] S[i,m,l] used in the paper's reference
+    # implementation, without making M part of the public construction.
+    @tensoropt elements[p, q, r] :=
+        S[i, m, a] * S[i, j, b] * S[k, n, b] * S[k, l, c] *
+        horizontal_projector[m, j, p] * horizontal_projector[n, l, q] *
+        vertical_projector[a, c, r]
+
+    normalization = elements[1, 1, 1]
+    iszero(normalization) && throw(ArgumentError("the fixed-point S identity element is zero"))
+    return elements ./ normalization
+end
+
+"""
     fixed_point_tensor_4x4(T; nstates = 3, eig_tol = 1.0e-12,
                           eig_krylovdim = 40, return_basis = false)
     fixed_point_tensor_4x4(scheme::SLoopTNR; kwargs...)
@@ -109,9 +219,11 @@ function fixed_point_tensor_4x4(
     A = convert(Array, T)
     allequal(size(A)) || throw(DimensionMismatch("all four tensor legs must have equal dimension"))
     d = size(A, 1)
-    nstates <= d^4 || throw(DimensionMismatch(
-        "cannot retain $nstates states from a transfer matrix of dimension $(d^4)"
-    ))
+    nstates <= d^4 || throw(
+        DimensionMismatch(
+            "cannot retain $nstates states from a transfer matrix of dimension $(d^4)"
+        )
+    )
 
     horizontal_basis, horizontal_eigenvalues = _fixed_point_basis_4x4(
         T, true, nstates, eig_tol, eig_krylovdim

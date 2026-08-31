@@ -31,6 +31,17 @@ mutable struct SLoopTNR{E, S, TT <: AbstractTensorMap{E, S, 4, 0}} <: TNRScheme{
     "Gradient optimization algorithm"
     gradalg::OptimKit.LBFGS
     function SLoopTNR(T::TT; gradalg = LBFGS(10; verbosity = 0, gradtol = 6.0e-7, maxiter = 40000)) where {E, S, TT <: AbstractTensorMap{E, S, 4, 0}}
+        if any(
+                charge != dual(charge) for leg in 1:4 for
+                    charge in sectors(space(T, leg))
+            )
+            throw(ArgumentError(
+                "SLoopTNR currently requires self-dual symmetry sectors because its " *
+                    "reflection-symmetric cost identifies every virtual space with " *
+                    "its dual. Complex Z_q irreps are therefore unsupported for q > 2; " *
+                    "use classical_potts_inv(Trivial, q) instead."
+            ))
+        end
         return new{E, S, TT}(T, nothing, gradalg)
     end
 end
@@ -39,48 +50,61 @@ end
 """
     classical_potts_inv(q::Int, β::Real)
     classical_potts_inv(q::Int)
+    classical_potts_inv(::Type{Trivial}, q::Int, β::Real)
+    classical_potts_inv(::Type{ZNIrrep{N}}, q::Int, β::Real) where N
 
 Construct the all-outgoing, reflection- and `C₄`-symmetric tensor for the
-ferromagnetic `q`-state Potts model. The four tensor legs carry explicit
-`ℤ_q` symmetry, represented by `ZNIrrep{q}`. If `β` is omitted, the critical
-inverse temperature [`potts_βc(q)`](@ref) is used.
+ferromagnetic `q`-state Potts model. If `β` is omitted, the critical inverse
+temperature [`potts_βc(q)`](@ref) is used.
 
-The tensor is written in the charge basis. Its only nonzero entries satisfy
+The default uses dense nonsymmetric legs, which are compatible with the
+self-dual virtual spaces required by [`SLoopTNR`](@ref). An explicit
+`ZNIrrep{q}` method is also provided for constructing the tensor in the charge
+basis. For `q > 2`, however, the charges `a` and `-a` are distinct complex
+irreps, so that tensor cannot currently be evolved by `SLoopTNR`.
+
+In the explicit charge basis, the only nonzero entries satisfy
 
 ```math
 a + b + c + d = 0 \\pmod q,
 ```
 
-and are obtained by splitting the Potts bond weights equally between their
-two endpoints. All four legs are in the codomain, as required by
-[`SLoopTNR`](@ref).
+The standard [`classical_potts`](@ref) tensor is reoriented so that all four
+legs are in the codomain, as required by [`SLoopTNR`](@ref).
 
 # Examples
 ```julia
-classical_potts_inv(3)      # critical three-state Potts model with ℤ₃ symmetry
-classical_potts_inv(4, 1.0) # four-state Potts model at a custom temperature
+classical_potts_inv(3)                    # SLoopTNR-compatible dense tensor
+classical_potts_inv(Trivial, 4, 1.0)      # custom temperature
+classical_potts_inv(ZNIrrep{3}, 3, 1.0)   # explicit charge-basis tensor
 ```
 """
-function classical_potts_inv(q::Int, β::Real)
+function _check_potts_inv_parameters(q::Int, β::Real)
     q >= 2 || throw(ArgumentError("the number of Potts states must be at least two"))
     β >= zero(β) || throw(ArgumentError("SLoopTNR requires ferromagnetic Potts coupling β >= 0"))
+    return nothing
+end
 
-    expβ = exp(β)
-    # Fourier eigenvalues of the bond Boltzmann matrix exp(β δₛₜ).
-    bond_eigenvalues = fill(expβ - 1, q)
-    bond_eigenvalues[1] = expβ + q - 1
-    half_bond_weights = sqrt.(bond_eigenvalues)
+function classical_potts_inv(::Type{Trivial}, q::Int, β::Real)
+    _check_potts_inv_parameters(q, β)
+    tensor = permute(classical_potts(Trivial, q, β), (1, 2, 3, 4))
+    return flip(tensor, (3, 4))
+end
 
-    tensor_data = zeros(Float64, ntuple(_ -> q, 4))
-    for index in CartesianIndices(tensor_data)
-        charges = Tuple(index) .- 1
-        if mod(sum(charges), q) == 0
-            tensor_data[index] = prod(half_bond_weights[charge + 1] for charge in charges) / q
-        end
-    end
-
-    V = Vect[ZNIrrep{q}](charge => 1 for charge in 0:(q - 1))
-    return TensorMap(tensor_data, V ⊗ V ⊗ V ⊗ V ← one(V))
+function classical_potts_inv(::Type{ZNIrrep{N}}, q::Int, β::Real) where {N}
+    _check_potts_inv_parameters(q, β)
+    N == q || throw(ArgumentError("number of irreps must match the number of Potts states"))
+    tensor = permute(classical_potts(ZNIrrep{N}, q, β), (1, 2, 3, 4))
+    return flip(tensor, (3, 4))
+end
+classical_potts_inv(q::Int, β::Real) = classical_potts_inv(Trivial, q, β)
+function classical_potts_inv(::Type{Trivial}, q::Int)
+    q >= 2 || throw(ArgumentError("the number of Potts states must be at least two"))
+    return classical_potts_inv(Trivial, q, potts_βc(q))
+end
+function classical_potts_inv(::Type{ZNIrrep{N}}, q::Int) where {N}
+    q >= 2 || throw(ArgumentError("the number of Potts states must be at least two"))
+    return classical_potts_inv(ZNIrrep{N}, q, potts_βc(q))
 end
 function classical_potts_inv(q::Int)
     q >= 2 || throw(ArgumentError("the number of Potts states must be at least two"))

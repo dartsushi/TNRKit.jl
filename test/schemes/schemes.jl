@@ -456,27 +456,45 @@ end
         @test numout(T_inv) == 4
         @test numin(T_inv) == 0
         @test all(space(T_inv, leg) == space(T_inv, 1) for leg in 2:4)
-        @test tensor_data ≈ permutedims(tensor_data, (2, 3, 4, 1))
+        # Spatial leg order is (left, bottom, top, right).
+        @test tensor_data ≈ permutedims(tensor_data, (2, 4, 1, 3))
         @test tensor_data ≈ permutedims(tensor_data, (4, 3, 2, 1))
 
-        for index in CartesianIndices(tensor_data)
+        @test SLoopTNR(T_inv).T === T_inv
+
+        T_charge = classical_potts_inv(ZNIrrep{q}, q)
+        charge_data = convert(Array, T_charge)
+        for index in CartesianIndices(charge_data)
             charges = Tuple(index) .- 1
             if mod(sum(charges), q) != 0
-                @test iszero(tensor_data[index])
+                @test iszero(charge_data[index])
             end
         end
-
-        @test SLoopTNR(T_inv).T === T_inv
     end
 
-    # The two-state Potts and Ising Hamiltonians differ only by a constant:
-    # exp(2β δₛₜ) = exp(β) exp(β s t).
-    β = Float64(ising_βc)
-    @test classical_potts_inv(2, 2β) ≈ exp(2β) * classical_ising_inv(β)
+    β = potts_βc(3)
+    @test classical_potts_inv(Trivial, 3, β) ≈
+        flip(permute(classical_potts(Trivial, 3, β), (1, 2, 3, 4)), (3, 4))
+    @test classical_potts_inv(ZNIrrep{3}, 3, β) ≈
+        flip(permute(classical_potts(ZNIrrep{3}, 3, β), (1, 2, 3, 4)), (3, 4))
+
+    # Complex Zq charges are not self-dual for q > 2, whereas the reflected
+    # SLoopTNR ansatz identifies each virtual space with its dual.
+    @test_throws ArgumentError SLoopTNR(classical_potts_inv(ZNIrrep{3}, 3))
 
     @test_throws ArgumentError classical_potts_inv(1)
     @test_throws ArgumentError classical_potts_inv(-1)
     @test_throws ArgumentError classical_potts_inv(3, -0.1)
+    @test_throws ArgumentError classical_potts_inv(ZNIrrep{4}, 3)
+end
+
+@testset "SLoopTNR - three-state Potts CFT spectrum" begin
+    gradalg = LBFGS(10; verbosity = 0, gradtol = 1.0e-13, maxiter = 20)
+    scheme = SLoopTNR(classical_potts_inv(3); gradalg)
+    run!(scheme, truncrank(16), maxiter(6); verbosity = 0)
+    cft_data = finalize_cftdata!(scheme)
+
+    @test cft_data[2:3] ≈ fill(2 / 15, 2) atol = 1.0e-3
 end
 
 @testset "SLoopTNR - Ising Model" begin

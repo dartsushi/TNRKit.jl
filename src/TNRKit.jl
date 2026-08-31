@@ -59,7 +59,7 @@ include("schemes/ttnr.jl")
 # Loop Methods
 include("schemes/looptnr.jl")
 include("schemes/symmetric_looptnr.jl")
-export classical_ising_inv # Ising model with all legs in codomain
+export classical_ising_inv, classical_potts_inv # Models with all legs in codomain
 
 export TNRScheme
 

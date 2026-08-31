@@ -448,6 +448,37 @@ end
     @test real(dot(grad, dS)) ≈ directional_derivative rtol = 1.0e-9
 end
 
+@testset "SLoopTNR - q-state Potts model" begin
+    for q in (2, 3, 4)
+        T_inv = classical_potts_inv(q)
+        tensor_data = convert(Array, T_inv)
+
+        @test numout(T_inv) == 4
+        @test numin(T_inv) == 0
+        @test all(space(T_inv, leg) == space(T_inv, 1) for leg in 2:4)
+        @test tensor_data ≈ permutedims(tensor_data, (2, 3, 4, 1))
+        @test tensor_data ≈ permutedims(tensor_data, (4, 3, 2, 1))
+
+        for index in CartesianIndices(tensor_data)
+            charges = Tuple(index) .- 1
+            if mod(sum(charges), q) != 0
+                @test iszero(tensor_data[index])
+            end
+        end
+
+        @test SLoopTNR(T_inv).T === T_inv
+    end
+
+    # The two-state Potts and Ising Hamiltonians differ only by a constant:
+    # exp(2β δₛₜ) = exp(β) exp(β s t).
+    β = Float64(ising_βc)
+    @test classical_potts_inv(2, 2β) ≈ exp(2β) * classical_ising_inv(β)
+
+    @test_throws ArgumentError classical_potts_inv(1)
+    @test_throws ArgumentError classical_potts_inv(-1)
+    @test_throws ArgumentError classical_potts_inv(3, -0.1)
+end
+
 @testset "SLoopTNR - Ising Model" begin
     @info "SLoopTNR ising free energy"
     T_inv = classical_ising_inv()

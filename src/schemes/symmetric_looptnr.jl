@@ -36,6 +36,57 @@ mutable struct SLoopTNR{E, S, TT <: AbstractTensorMap{E, S, 4, 0}} <: TNRScheme{
 end
 
 ########## Initial tensor ##########
+"""
+    classical_potts_inv(q::Int, β::Real)
+    classical_potts_inv(q::Int)
+
+Construct the all-outgoing, reflection- and `C₄`-symmetric tensor for the
+ferromagnetic `q`-state Potts model. The four tensor legs carry explicit
+`ℤ_q` symmetry, represented by `ZNIrrep{q}`. If `β` is omitted, the critical
+inverse temperature [`potts_βc(q)`](@ref) is used.
+
+The tensor is written in the charge basis. Its only nonzero entries satisfy
+
+```math
+a + b + c + d = 0 \\pmod q,
+```
+
+and are obtained by splitting the Potts bond weights equally between their
+two endpoints. All four legs are in the codomain, as required by
+[`SLoopTNR`](@ref).
+
+# Examples
+```julia
+classical_potts_inv(3)      # critical three-state Potts model with ℤ₃ symmetry
+classical_potts_inv(4, 1.0) # four-state Potts model at a custom temperature
+```
+"""
+function classical_potts_inv(q::Int, β::Real)
+    q >= 2 || throw(ArgumentError("the number of Potts states must be at least two"))
+    β >= zero(β) || throw(ArgumentError("SLoopTNR requires ferromagnetic Potts coupling β >= 0"))
+
+    expβ = exp(β)
+    # Fourier eigenvalues of the bond Boltzmann matrix exp(β δₛₜ).
+    bond_eigenvalues = fill(expβ - 1, q)
+    bond_eigenvalues[1] = expβ + q - 1
+    half_bond_weights = sqrt.(bond_eigenvalues)
+
+    tensor_data = zeros(Float64, ntuple(_ -> q, 4))
+    for index in CartesianIndices(tensor_data)
+        charges = Tuple(index) .- 1
+        if mod(sum(charges), q) == 0
+            tensor_data[index] = prod(half_bond_weights[charge + 1] for charge in charges) / q
+        end
+    end
+
+    V = Vect[ZNIrrep{q}](charge => 1 for charge in 0:(q - 1))
+    return TensorMap(tensor_data, V ⊗ V ⊗ V ⊗ V ← one(V))
+end
+function classical_potts_inv(q::Int)
+    q >= 2 || throw(ArgumentError("the number of Potts states must be at least two"))
+    return classical_potts_inv(q, potts_βc(q))
+end
+
 function classical_ising_inv(β)
     x = cosh(β)
     y = sinh(β)
